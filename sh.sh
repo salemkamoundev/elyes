@@ -1,76 +1,78 @@
-#!/bin/bash
+#!/usr/bin/env node
 
-# Arrêter le script si une erreur survient
-set -e
+// Utilisation de 'require' pour une exécution directe avec Node.js sans configuration "module"
+const { initializeApp } = require("firebase/app");
+const { getFirestore, collection, addDoc } = require("firebase/firestore");
 
-echo "🚀 Configuration du projet ElyesImmo..."
+// 1. Configuration Firebase (Celle de ton projet)
+const firebaseConfig = {
+  apiKey: "AIzaSyDll32rZOyn9kan59MUaaYUONYBB5eNXk0",
+  authDomain: "elyes-2e850.firebaseapp.com",
+  projectId: "elyes-2e850",
+  storageBucket: "elyes-2e850.firebasestorage.app",
+  messagingSenderId: "516472898770",
+  appId: "1:516472898770:web:ec880b8404688be135d90b",
+  measurementId: "G-7L01JCJPEQ"
+};
 
-PROJECT_NAME="elyes-immo"
+// 2. Initialisation
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
-# 1. Vérification / Création du projet
-if [ -d "$PROJECT_NAME" ]; then
-    echo "⚠️ Le dossier '$PROJECT_NAME' existe déjà."
-    echo "🔄 Passage en mode RÉPARATION/MISE À JOUR..."
-    cd "$PROJECT_NAME"
-else
-    # Vérif CLI
-    if ! command -v ng &> /dev/null; then
-        echo "Angular CLI n'est pas installé. Installation..."
-        npm install -g @angular/cli
-    fi
-    
-    echo "📦 Création du projet Angular '$PROJECT_NAME'..."
-    ng new "$PROJECT_NAME" --routing --style=css --skip-git --defaults
-    cd "$PROJECT_NAME"
-fi
-
-# 2. Installation des dépendances (Force la réinstallation pour corriger les versions)
-echo "🎨 Installation de Tailwind CSS et de l'adaptateur PostCSS..."
-# L'installation de @tailwindcss/postcss est la clé pour corriger ton erreur
-npm install -D tailwindcss @tailwindcss/postcss postcss autoprefixer
-
-# 3. Création EXPLICITE de postcss.config.js
-# C'est ce fichier qui manque souvent et cause l'erreur "PostCSS plugin moved"
-echo "⚙️ Génération de postcss.config.js (Correction Erreur)..."
-cat > postcss.config.js <<EOF
-module.exports = {
-  plugins: {
-    '@tailwindcss/postcss': {},
-    autoprefixer: {},
+// 3. Données à insérer (Respectant ta structure stricte)
+const houses = [
+  {
+    title: "Villa de Luxe Hammamet",
+    price: 3500,
+    location: "Hammamet Nord",
+    imageUrl: "https://images.unsplash.com/photo-1613490493576-7fde63acd811?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+    description: "Magnifique villa avec piscine, vue mer, 5 chambres. Quartier calme et sécurisé.",
+    bedrooms: 5,
+    ownerPhone: "+216 215 415 425",
+    ownerEmail: "elyes@gmail.com",
+    createdAt: new Date()
   },
-}
-EOF
-
-# 4. Configuration de tailwind.config.js
-echo "⚙️ Génération de tailwind.config.js..."
-cat > tailwind.config.js <<EOF
-/** @type {import('tailwindcss').Config} */
-module.exports = {
-  content: [
-    "./src/**/*.{html,ts}",
-  ],
-  theme: {
-    extend: {},
+  {
+    title: "Appartement S+2 La Marsa",
+    price: 1800,
+    location: "La Marsa",
+    imageUrl: "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+    description: "Appartement haut standing, proche plage et commerces. Idéal pour couple ou petite famille.",
+    bedrooms: 2,
+    ownerPhone: "+216 215 415 425",
+    ownerEmail: "elyes@gmail.com",
+    createdAt: new Date()
   },
-  plugins: [],
+  {
+    title: "Duplex Moderne Sousse",
+    price: 1200,
+    location: "Sousse Kantaoui",
+    imageUrl: "https://images.unsplash.com/photo-1512917774080-9991f1c4c750?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80",
+    description: "Duplex spacieux dans résidence avec ascenseur. Place de parking incluse.",
+    bedrooms: 3,
+    ownerPhone: "+216 215 415 425",
+    ownerEmail: "elyes@gmail.com",
+    createdAt: new Date()
+  }
+];
+
+// 4. Fonction d'insertion
+async function seedDatabase() {
+  console.log("🌱 Démarrage du seeding Firestore...");
+  // Référence à la collection 'houses'
+  const colRef = collection(db, "houses");
+
+  try {
+    for (const house of houses) {
+      const docRef = await addDoc(colRef, house);
+      console.log(`✅ Annonce ajoutée : ${house.title} (ID: ${docRef.id})`);
+    }
+    console.log("🎉 Base de données peuplée avec succès !");
+    process.exit(0);
+  } catch (error) {
+    console.error("❌ Erreur lors du seeding :", error);
+    process.exit(1);
+  }
 }
-EOF
 
-# 5. Injection des directives Tailwind dans styles.css
-echo "💅 Mise à jour de src/styles.css..."
-cat > src/styles.css <<EOF
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-/* Styles globaux */
-html, body {
-    height: 100%;
-    margin: 0;
-    font-family: system-ui, -apple-system, sans-serif;
-}
-EOF
-
-echo "✅ Réparation et installation terminées avec succès !"
-echo "👉 Tu peux maintenant lancer :"
-echo "   cd $PROJECT_NAME && ng serve"
+seedDatabase();
