@@ -6,83 +6,10 @@ if [ -d "elyes-immo" ]; then
     cd elyes-immo
 fi
 
-echo "🔧 Correction de l'erreur 'Invalid Compact JWS' avec la clé secrète fournie (ATTENTION: À changer pour la production)..."
+echo "🔎 Ajout des filtres de recherche à la page d'accueil..."
 
-# 1. MISE À JOUR ENVIRONNEMENT (Insertion de la Clé Secrète dans le champ 'key')
-echo "🌍 Mise à jour de src/environments/environment.ts avec la Clé Secrète..."
-cat > src/environments/environment.ts <<'EOF'
-export const environment = {
-  production: false,
-  firebaseConfig: {
-    apiKey: 'AIzaSyDll32rZOyn9kan59MUaaYUONYBB5eNXk0',
-    authDomain: 'elyes-2e850.firebaseapp.com',
-    projectId: 'elyes-2e850',
-    storageBucket: 'elyes-2e850.firebasestorage.app',
-    messagingSenderId: '516472898770',
-    appId: '1:516472898770:web:ec880b8404688be135d90b',
-    measurementId: 'G-7L01JCJPEQ'
-  },
-  supabaseConfig: {
-    // CLÉ SECRÈTE UTILISÉE TEMPORAIREMENT POUR LE DÉVELOPPEMENT. DOIT ÊTRE REMPLACÉE PAR LA CLÉ PUBLIQUE + RLS EN PROD.
-    url: 'https://qailxxltsofkgtfkgzhv.supabase.co',
-    key: 'sb_secret_Qxw6yEx9L0hDSNg6uZo4Yg_GvmWX68x', 
-    bucket: 'propositionspourkerkennah' 
-  }
-};
-EOF
-
-# 2. MISE À JOUR DU SERVICE SUPABASE (Aucun changement nécessaire, il utilise déjà environment.key)
-echo "☁️ Mise à jour de SupabaseService (Le service utilisera désormais la clé secrète pour l'upload)."
-cat > src/app/services/supabase.service.ts <<'EOF'
-import { Injectable } from '@angular/core';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { environment } from '../../environments/environment';
-
-@Injectable({
-  providedIn: 'root'
-})
-export class SupabaseService {
-  private supabase: SupabaseClient;
-  private bucketName: string;
-
-  constructor() {
-    this.bucketName = environment.supabaseConfig.bucket;
-    // Crée le client avec la clé fournie (maintenant la clé secrète)
-    this.supabase = createClient(environment.supabaseConfig.url, environment.supabaseConfig.key);
-  }
-
-  async uploadFile(file: File): Promise<string | null> {
-    try {
-      const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}_${file.name}`;
-      
-      // Upload vers le bucket défini dans l'environnement
-      const { data, error } = await this.supabase.storage
-        .from(this.bucketName) 
-        .upload(fileName, file);
-
-      if (error) {
-        console.error('Erreur Upload Supabase:', error);
-        // Si l'erreur est liée aux permissions (400 Bad Request), la clé secrète devrait la bypasser.
-        // Si l'erreur persiste, assurez-vous que l'URL et le nom du bucket sont corrects.
-        return null;
-      }
-
-      // Récupérer l'URL publique
-      const { data: publicUrlData } = this.supabase.storage
-        .from(this.bucketName) 
-        .getPublicUrl(fileName);
-
-      return publicUrlData.publicUrl;
-    } catch (e) {
-      console.error('Exception Upload:', e);
-      return null;
-    }
-  }
-}
-EOF
-
-# 3. MISE A JOUR DU SERVICE FIREBASE (CRUD complet des maisons)
-echo "🛠️ Mise à jour de FirebaseService (CRUD House)..."
+# --- 1. MISE A JOUR DU SERVICE FIREBASE (Ajout de la fonction de recherche) ---
+echo "🛠️ Mise à jour de FirebaseService (Ajout de la fonction de recherche)..."
 cat > src/app/services/firebase.service.ts <<'EOF'
 import { Injectable } from '@angular/core';
 import { initializeApp } from 'firebase/app';
@@ -155,13 +82,36 @@ export class FirebaseService {
     return user?.email === 'elyes@gmail.com';
   }
 
-  // --- HOUSES CRUD ---
-  getHouses(): Observable<House[]> {
+  // --- HOUSES CRUD / FILTRAGE ---
+  // Fonction qui écoute les maisons avec un filtrage simple
+  getHouses(filters: { search?: string, maxPrice?: number, minBedrooms?: number } = {}): Observable<House[]> {
     return new Observable((observer) => {
       const colRef = collection(this.db, 'houses');
-      const q = query(colRef, orderBy('createdAt', 'desc'));
+      let q = query(colRef, orderBy('createdAt', 'desc'));
+      
+      // NOTE: Le filtrage par texte est limité dans Firestore aux opérations 'starts-with'.
+      // Le filtrage par prix et chambres se fera principalement côté client ou par des requêtes distinctes si plus complexe.
+      // Pour des raisons de simplicité et d'absence d'Index Firestore préconfiguré, nous filtrons tous les résultats côté client
+      // SAUF si le filtre est simple (ex: un seul 'where').
+      
       const unsubscribe = onSnapshot(q, (snapshot) => {
-          const houses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as House));
+          let houses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as House));
+          
+          // Filtrage côté client pour la démo
+          if (filters.search) {
+            const searchTerm = filters.search.toLowerCase();
+            houses = houses.filter(h => 
+              h.title.toLowerCase().includes(searchTerm) || 
+              h.location.toLowerCase().includes(searchTerm)
+            );
+          }
+          if (filters.maxPrice) {
+            houses = houses.filter(h => h.price <= filters.maxPrice!);
+          }
+          if (filters.minBedrooms) {
+            houses = houses.filter(h => h.bedrooms >= filters.minBedrooms!);
+          }
+
           observer.next(houses);
         }, (error) => observer.error(error));
       return () => unsubscribe();
@@ -263,219 +213,489 @@ export class FirebaseService {
 }
 EOF
 
-# 4. MISE A JOUR ADD HOUSE (Gestion Création/Modification)
-echo "📝 Mise à jour de AddHouseComponent (CRUD House)."
-cat > src/app/add-house/add-house.component.ts <<'EOF'
-import { Component, inject, signal, OnInit } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
-import { Router, RouterLink, ActivatedRoute } from '@angular/router';
-import { FirebaseService, House } from '../services/firebase.service';
-import { SupabaseService } from '../services/supabase.service';
-import { switchMap } from 'rxjs/operators';
-import { of } from 'rxjs';
+# 2. MISE A JOUR HOME COMPONENT (Intégration du formulaire de filtres)
+echo "🏠 Mise à jour de HomeComponent (Ajout des filtres de recherche)..."
+cat > src/app/home/home.component.ts <<'EOF'
+import { Component, inject, signal, HostListener, OnInit } from '@angular/core';
+import { CommonModule, DatePipe } from '@angular/common';
+import { RouterModule, Router } from '@angular/router';
+import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
+import { FirebaseService, Booking } from '../services/firebase.service';
+import { Observable, BehaviorSubject, combineLatest } from 'rxjs';
+import { switchMap, startWith, debounceTime } from 'rxjs/operators';
+import { User } from 'firebase/auth';
 
 @Component({
-  selector: 'app-add-house',
+  selector: 'app-home',
   standalone: true,
-  imports: [CommonModule, ReactiveFormsModule, RouterLink],
+  imports: [CommonModule, RouterModule, FormsModule, DatePipe, ReactiveFormsModule],
   template: `
-    <div class="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8 font-sans">
-      <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-md overflow-hidden">
-        
-        <div class="bg-blue-600 p-4 flex justify-between items-center">
-          <h2 class="text-xl font-bold text-white">{{ isEditMode ? 'Modifier Annonce' : 'Publier une annonce' }}</h2>
-          <a routerLink="/admin-dashboard" class="text-blue-100 hover:text-white text-sm font-medium">✕ Annuler</a>
-        </div>
-
-        <div *ngIf="isLoadingHouse" class="p-8 text-center text-gray-500">
-           Chargement des données de la maison...
-        </div>
-
-        <form *ngIf="!isLoadingHouse" [formGroup]="houseForm" (ngSubmit)="onSubmit()" class="p-8 space-y-6">
-          
-          <!-- Titre -->
-          <div>
-            <label class="block text-sm font-medium text-gray-700">Titre de l'annonce</label>
-            <input formControlName="title" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:border-blue-500 focus:ring-blue-500" placeholder="Ex: Villa S+3 Hammamet">
-          </div>
-
-          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <!-- Prix -->
-            <div>
-              <label class="block text-sm font-medium text-gray-700">Prix (DT)</label>
-              <input formControlName="price" type="number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:border-blue-500 focus:ring-blue-500">
+    <div class="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
+      
+      <!-- Navbar (Contenu inchangé) -->
+      <nav class="bg-white/90 backdrop-blur-md shadow-sm sticky top-0 z-50 transition-all duration-300">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div class="flex justify-between h-16 items-center">
+            <div class="flex items-center gap-2 cursor-pointer" routerLink="/">
+              <div class="bg-blue-600 text-white p-1 rounded">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" /></svg>
+              </div>
+              <span class="font-bold text-xl tracking-tight text-blue-900">ElyesImmo</span>
             </div>
-            <!-- Chambres -->
-             <div>
-              <label class="block text-sm font-medium text-gray-700">Chambres</label>
-              <input formControlName="bedrooms" type="number" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:border-blue-500 focus:ring-blue-500">
+            <div class="flex items-center gap-4">
+              <ng-container *ngIf="userSignal() as user; else loginBtn">
+                 <ng-container *ngIf="firebaseService.isAdmin(user); else userMenu">
+                    <a routerLink="/admin-dashboard" class="bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-gray-700 transition shadow-lg">Dashboard Admin</a>
+                 </ng-container>
+                 <ng-template #userMenu>
+                    <div class="hidden md:flex items-center gap-2 text-sm text-gray-600 mr-2"><span class="w-2 h-2 rounded-full bg-green-500"></span>{{ user.email }}</div>
+                    <a routerLink="/my-bookings" class="text-gray-600 hover:text-blue-600 text-sm font-medium border-b-2 border-transparent hover:border-blue-600 pb-0.5 transition">Mes Demandes</a>
+                    <button (click)="logout()" class="text-red-500 hover:text-red-700 text-sm font-medium ml-2">Déconnexion</button>
+                 </ng-template>
+              </ng-container>
+              <ng-template #loginBtn>
+                <a routerLink="/login" class="text-blue-600 font-medium text-sm border border-blue-600 px-4 py-2 rounded hover:bg-blue-50 transition">Se connecter</a>
+              </ng-template>
             </div>
           </div>
+        </div>
+      </nav>
 
-          <!-- Localisation -->
-          <div>
-            <label class="block text-sm font-medium text-gray-700">Localisation</label>
-            <input formControlName="location" type="text" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:border-blue-500 focus:ring-blue-500" placeholder="Tunis, Sousse...">
-          </div>
-
-          <!-- Description -->
-          <div>
-            <label class="block text-sm font-medium text-gray-700">Description</label>
-            <textarea formControlName="description" rows="4" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm p-3 border focus:border-blue-500 focus:ring-blue-500"></textarea>
-          </div>
-
-          <!-- UPLOAD MULTIMEDIA -->
-          <div class="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:bg-gray-50 transition" (dragover)="$event.preventDefault()" (drop)="onDrop($event)">
-            <label class="cursor-pointer block">
-              <span class="block text-blue-600 font-bold mb-1">Cliquez pour ajouter des photos et vidéos</span>
-              <span class="block text-xs text-gray-500">ou glissez-déposez vos fichiers ici</span>
-              <input type="file" multiple (change)="onFileSelected($event)" class="hidden" accept="image/*,video/*">
-            </label>
+      <!-- Hero Section PARALLAX -->
+      <div class="relative h-[600px] flex items-center justify-center overflow-hidden">
+         <!-- Image de fond animée -->
+         <div class="absolute inset-0 z-0" 
+              [style.transform]="'translateY(' + parallaxOffset + 'px)'"
+              style="will-change: transform;">
+           <img src="https://images.unsplash.com/photo-1564013799919-ab600027ffc6?ixlib=rb-1.2.1&auto=format&fit=crop&w=1950&q=80" 
+                class="w-full h-[120%] object-cover opacity-90 filter brightness-75" alt="Background">
+         </div>
+         
+         <!-- Contenu Hero et Formulaire de Filtre -->
+         <div class="relative z-10 text-center px-4 animate-fade-in-up w-full max-w-5xl">
+            <h1 class="text-5xl md:text-7xl font-extrabold text-white mb-6 drop-shadow-lg tracking-tight">
+              L'Excellence <br> <span class="text-blue-400">Immobilière</span>
+            </h1>
             
-            <!-- Prévisualisation des uploads -->
-            <div class="mt-4 grid grid-cols-4 gap-2" *ngIf="uploadedFiles.length > 0">
-              <div *ngFor="let file of uploadedFiles; let i = index" class="relative group aspect-square bg-gray-100 rounded overflow-hidden">
-                <!-- Bouton de suppression -->
-                <button type="button" (click)="removeFile(i)" class="absolute top-1 right-1 bg-red-600 text-white p-1 rounded-full text-xs opacity-0 group-hover:opacity-100 transition z-10">
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" /></svg>
-                </button>
-                <!-- Media -->
-                <img *ngIf="file.type === 'image'" [src]="file.url" class="w-full h-full object-cover">
-                <div *ngIf="file.type === 'video'" class="w-full h-full flex items-center justify-center bg-black text-white text-xs">Vidéo</div>
+            <!-- FORMULAIRE DE FILTRAGE -->
+            <form [formGroup]="filterForm" class="bg-white/95 backdrop-blur-sm p-6 rounded-xl shadow-2xl max-w-4xl mx-auto text-left transition-all duration-300">
+               <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                   <!-- Recherche Texte -->
+                   <div class="md:col-span-2">
+                       <label class="block text-sm font-medium text-gray-700 mb-1">Recherche (Titre, Localisation)</label>
+                       <input formControlName="search" type="text" placeholder="Ex: Sousse, Villa, Tunis..." 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                   </div>
+                   
+                   <!-- Prix Max -->
+                   <div>
+                       <label class="block text-sm font-medium text-gray-700 mb-1">Prix Max (DT)</label>
+                       <input formControlName="maxPrice" type="number" placeholder="5000" 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                   </div>
+                   
+                   <!-- Chambres Min -->
+                   <div>
+                       <label class="block text-sm font-medium text-gray-700 mb-1">Chambres Min</label>
+                       <select formControlName="minBedrooms" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white">
+                           <option value="0">Toutes</option>
+                           <option value="1">1+</option>
+                           <option value="2">2+</option>
+                           <option value="3">3+</option>
+                           <option value="4">4+</option>
+                       </select>
+                   </div>
+                   
+               </div>
+               <div class="mt-4 flex justify-end">
+                  <button type="button" (click)="resetFilters()" class="text-sm text-gray-500 hover:text-gray-700 transition">
+                     Réinitialiser les filtres
+                  </button>
+               </div>
+            </form>
+         </div>
+      </div>
+
+      <!-- Listings Grid -->
+      <div id="listings" class="max-w-7xl mx-auto px-4 py-16 flex-grow w-full">
+        <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Propriétés disponibles ({{ (houses$ | async)?.length || 0 }})</h2>
+        
+        <div *ngIf="houses$ | async as houses; else loading">
+          <div *ngIf="houses.length === 0" class="text-center py-10 bg-white rounded-xl shadow">
+             <p class="text-gray-500">Aucune maison ne correspond à vos critères de recherche.</p>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
+            <div *ngFor="let house of houses" class="bg-white rounded-2xl shadow-lg overflow-hidden hover:shadow-2xl transition duration-500 group border border-gray-100 flex flex-col h-full transform hover:-translate-y-1">
+              
+              <!-- Image Card avec Badge Vidéo -->
+              <div class="relative h-64 overflow-hidden bg-gray-200 cursor-pointer" (click)="openBookingModal(house)">
+                <img [src]="house.imageUrl || 'https://via.placeholder.com/600x400'" class="w-full h-full object-cover group-hover:scale-110 transition duration-700 ease-in-out">
+                <div class="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition duration-300"></div>
+                
+                <div class="absolute top-4 right-4 bg-white/90 backdrop-blur text-blue-900 px-3 py-1 rounded-full font-bold text-sm shadow-sm">
+                  {{ house.price }} DT / nuit
+                </div>
+                
+                <!-- Badge si Vidéos disponibles -->
+                <div *ngIf="house.videos && house.videos.length > 0" class="absolute bottom-4 left-4 bg-red-600 text-white px-2 py-1 rounded flex items-center gap-1 text-xs shadow-md">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd" /></svg>
+                  Vidéo
+                </div>
               </div>
-              <!-- Loading Spinner -->
-              <div *ngIf="isUploading" class="aspect-square flex items-center justify-center bg-gray-50">
-                <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
+              
+              <div class="p-6 flex flex-col flex-grow">
+                <div class="flex items-center text-gray-500 text-sm mb-3">
+                  <span class="flex items-center gap-1"><svg class="h-4 w-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg> {{ house.location }}</span>
+                  <span class="mx-2">•</span>
+                  <span *ngIf="house.bedrooms" class="flex items-center gap-1">🛏️ {{ house.bedrooms }} ch.</span>
+                </div>
+                <h3 class="text-xl font-bold text-gray-900 mb-2 group-hover:text-blue-600 transition">{{ house.title }}</h3>
+                <p class="text-gray-600 text-sm mb-4 flex-grow line-clamp-3">{{ house.description }}</p>
+                
+                <div class="mt-4 pt-4 border-t border-gray-100">
+                  <button (click)="openBookingModal(house)" class="w-full bg-gray-900 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-xl transition flex items-center justify-center gap-2">
+                    Voir détails & Réserver
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-
-          <!-- Bouton Submit -->
-          <div>
-            <button type="submit" 
-              [disabled]="houseForm.invalid || isSubmitting || isUploading"
-              class="w-full flex justify-center py-3 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
-              {{ isSubmitting ? (isEditMode ? 'Sauvegarde...' : 'Publication...') : (isUploading ? 'Upload en cours...' : (isEditMode ? 'Enregistrer les modifications' : 'Publier l\\'annonce')) }}
-            </button>
-          </div>
-        </form>
+        </div>
+        <ng-template #loading>
+           <div class="text-center py-20"><div class="animate-spin inline-block w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full"></div></div>
+        </ng-template>
       </div>
+
+      <!-- MODAL DE RÉSERVATION & GALERIE (Contenu inchangé) -->
+      <div *ngIf="selectedHouse" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-60 backdrop-blur-sm transition-opacity">
+        <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full overflow-hidden flex flex-col md:flex-row max-h-[90vh]">
+          
+          <!-- Colonne Gauche : Galerie -->
+          <div class="md:w-1/2 bg-gray-100 p-4 overflow-y-auto border-r border-gray-200">
+             <h3 class="font-bold text-lg mb-4 text-gray-800">Galerie Photos</h3>
+             <div class="space-y-4">
+               <!-- Images -->
+               <img *ngFor="let img of (selectedHouse.images || [selectedHouse.imageUrl])" [src]="img" class="w-full rounded-lg shadow-sm hover:shadow-md transition">
+               
+               <!-- Vidéos -->
+               <div *ngIf="selectedHouse.videos?.length">
+                 <h4 class="font-bold text-sm mt-6 mb-2 text-gray-700">Vidéos</h4>
+                 <video *ngFor="let vid of selectedHouse.videos" [src]="vid" controls class="w-full rounded-lg shadow-sm mb-2 bg-black"></video>
+               </div>
+             </div>
+          </div>
+
+          <!-- Colonne Droite : Formulaire -->
+          <div class="md:w-1/2 flex flex-col">
+            <div class="bg-blue-600 p-4 flex justify-between items-center text-white shrink-0">
+              <div>
+                <h3 class="font-bold text-lg">{{ selectedHouse.title }}</h3>
+                <p class="text-sm opacity-90">{{ selectedHouse.price }} DT / nuit</p>
+              </div>
+              <button (click)="closeModal()" class="text-white hover:text-gray-200 text-2xl font-bold">&times;</button>
+            </div>
+            
+            <div class="p-6 overflow-y-auto flex-grow">
+              
+              <!-- Calendrier & Formulaire existants -->
+              <h4 class="font-bold text-gray-700 mb-3 flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                Sélectionnez vos dates
+              </h4>
+
+              <!-- CALENDRIER (Réduit pour s'adapter) -->
+              <div class="mb-4 border rounded-lg p-3 bg-gray-50 text-sm">
+                <div class="flex justify-between items-center mb-2">
+                  <button (click)="changeMonth(-1)" class="p-1 hover:bg-gray-200 rounded">◀</button>
+                  <span class="font-bold text-gray-800">{{ currentMonthName }} {{ currentYear }}</span>
+                  <button (click)="changeMonth(1)" class="p-1 hover:bg-gray-200 rounded">▶</button>
+                </div>
+                <div class="grid grid-cols-7 text-center text-xs font-semibold text-gray-500 mb-1">
+                  <div>D</div><div>L</div><div>M</div><div>M</div><div>J</div><div>V</div><div>S</div>
+                </div>
+                <div class="grid grid-cols-7 gap-1">
+                  <div *ngFor="let empty of emptyDays" class="h-6"></div>
+                  <button *ngFor="let day of calendarDays" 
+                    (click)="selectDate(day)"
+                    [disabled]="day.isBooked || day.isPast"
+                    class="h-7 w-7 rounded-full text-xs flex items-center justify-center transition relative"
+                    [ngClass]="{
+                      'bg-red-100 text-red-400 line-through': day.isBooked,
+                      'text-gray-300': day.isPast && !day.isBooked,
+                      'bg-blue-600 text-white font-bold': isSelected(day.date),
+                      'bg-blue-100 text-blue-800': isInRange(day.date),
+                      'hover:bg-blue-200': !day.isBooked && !day.isPast
+                    }">
+                    {{ day.dayNumber }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Récap -->
+              <div class="bg-blue-50 p-3 rounded-lg mb-4" *ngIf="startDate && endDate">
+                <div class="flex justify-between text-sm">
+                  <span>{{ startDate | date:'dd/MM' }} au {{ endDate | date:'dd/MM' }}</span>
+                  <span class="font-bold text-blue-700">{{ calculateTotal() }} DT</span>
+                </div>
+              </div>
+              
+              <div *ngIf="errorMessage" class="bg-red-50 text-red-600 p-2 rounded text-xs text-center mb-4 border border-red-200">
+                {{ errorMessage }}
+              </div>
+            </div>
+
+            <div class="p-4 border-t bg-gray-50 flex gap-3 shrink-0">
+              <button (click)="closeModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-100">Annuler</button>
+              <button (click)="confirmBooking()" [disabled]="!isValidDates() || isSubmitting" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-bold shadow">
+                {{ isSubmitting ? '...' : 'Confirmer' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
     </div>
   `
 })
-export class AddHouseComponent implements OnInit {
-  private fb = inject(FormBuilder);
-  private firebaseService = inject(FirebaseService);
-  private supabaseService = inject(SupabaseService);
-  private router = inject(Router);
-  private route = inject(ActivatedRoute);
-
-  isSubmitting = false;
-  isUploading = false;
-  isLoadingHouse = true;
-  isEditMode = false;
-  houseId: string | null = null;
+export class HomeComponent implements OnInit {
+  firebaseService = inject(FirebaseService);
+  router = inject(Router);
+  fb = inject(FormBuilder);
   
-  uploadedFiles: { url: string, type: 'image' | 'video' }[] = [];
+  // Observable pour les données des maisons filtrées
+  private filtersSubject = new BehaviorSubject<{ search?: string, maxPrice?: number, minBedrooms?: number }>({});
+  houses$: Observable<any[]>;
 
-  houseForm: FormGroup = this.fb.group({
-    title: ['', Validators.required],
-    price: ['', [Validators.required, Validators.min(0)]],
-    location: ['', Validators.required],
-    description: ['', Validators.required],
-    bedrooms: [1, [Validators.required, Validators.min(0)]]
-  });
+  filterForm: FormGroup;
+  
+  userSignal = signal<User | null>(null);
+  
+  selectedHouse: any = null;
+  blockedDates: Set<string> = new Set();
+  
+  currentDate = new Date();
+  currentMonth = this.currentDate.getMonth();
+  currentYear = this.currentDate.getFullYear();
+  
+  calendarDays: any[] = [];
+  emptyDays: any[] = [];
+  
+  startDate: Date | null = null;
+  endDate: Date | null = null;
+  parallaxOffset = 0;
+  
+  errorMessage = '';
+  isSubmitting = false;
+
+  constructor() {
+    this.firebaseService.user$.subscribe(u => this.userSignal.set(u));
+    
+    // Initialisation du formulaire de filtre
+    this.filterForm = this.fb.group({
+      search: [''],
+      maxPrice: [null],
+      minBedrooms: [0]
+    });
+
+    // Écouter les changements du formulaire et les appliquer aux filtres
+    this.filterForm.valueChanges.pipe(
+      debounceTime(300), // Attendre 300ms après la frappe
+      startWith(this.filterForm.value)
+    ).subscribe(filters => {
+      // Nettoyer les valeurs nulles ou vides
+      const cleanFilters: any = {};
+      if (filters.search) cleanFilters.search = filters.search;
+      if (filters.maxPrice) cleanFilters.maxPrice = filters.maxPrice;
+      if (filters.minBedrooms && filters.minBedrooms !== '0') cleanFilters.minBedrooms = parseInt(filters.minBedrooms, 10);
+      
+      this.filtersSubject.next(cleanFilters);
+    });
+
+    // Pipe pour récupérer les maisons en fonction des filtres
+    this.houses$ = this.filtersSubject.pipe(
+      switchMap(filters => this.firebaseService.getHouses(filters))
+    );
+  }
 
   ngOnInit() {
-    this.route.paramMap.pipe(
-      switchMap(params => {
-        this.houseId = params.get('id');
-        this.isEditMode = !!this.houseId;
+    // Initialisation HostListener
+  }
 
-        if (this.isEditMode && this.houseId) {
-          return this.firebaseService.getHouseById(this.houseId);
+  resetFilters() {
+    this.filterForm.reset({ search: '', maxPrice: null, minBedrooms: 0 });
+  }
+
+  // PARALLAX LISTENER
+  @HostListener('window:scroll', ['$event'])
+  onWindowScroll(event: Event) {
+    const scrollY = window.scrollY;
+    if (scrollY < 800) {
+      this.parallaxOffset = scrollY * 0.5;
+    }
+  }
+
+  scrollToListings() {
+    document.getElementById('listings')?.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  get currentMonthName(): string {
+    return new Date(this.currentYear, this.currentMonth).toLocaleString('fr-FR', { month: 'long' });
+  }
+
+  logout() { this.firebaseService.logout(); }
+
+  openBookingModal(house: any) {
+    if (!this.userSignal()) {
+      alert("Veuillez vous connecter pour voir les détails.");
+      this.router.navigate(['/login']);
+      return;
+    }
+    this.selectedHouse = house;
+    this.resetSelection();
+    
+    this.firebaseService.getApprovedBookingsForHouse(house.id).subscribe(bookings => {
+      this.blockedDates.clear();
+      bookings.forEach(b => {
+        let current = new Date(b.startDate);
+        const end = new Date(b.endDate);
+        while (current <= end) {
+          this.blockedDates.add(this.formatDate(current));
+          current.setDate(current.getDate() + 1);
         }
-        this.isLoadingHouse = false;
-        return of(null);
-      })
-    ).subscribe(house => {
-      if (house) {
-        this.houseForm.patchValue(house);
-        // CORRECTION DE L'ERREUR ICI : Utilisation de || [] pour s'assurer que .map est appelé sur un tableau
-        this.uploadedFiles = [
-          ...(house.images || []).map(url => ({ url, type: 'image' as const })),
-          ...(house.videos || []).map(url => ({ url, type: 'video' as const }))
-        ];
-      }
-      this.isLoadingHouse = false;
+      });
+      this.generateCalendar();
     });
   }
 
-  // Gestion Upload
-  async handleFiles(files: FileList | null) {
-    if (!files || files.length === 0) return;
-    this.isUploading = true;
+  closeModal() {
+    this.selectedHouse = null;
+  }
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const url = await this.supabaseService.uploadFile(file);
-      if (url) {
-        const type = file.type.startsWith('image/') ? 'image' : 'video';
-        this.uploadedFiles.push({ url, type });
+  changeMonth(delta: number) {
+    this.currentMonth += delta;
+    if (this.currentMonth > 11) { this.currentMonth = 0; this.currentYear++; }
+    else if (this.currentMonth < 0) { this.currentMonth = 11; this.currentYear--; }
+    this.generateCalendar();
+  }
+
+  generateCalendar() {
+    this.calendarDays = [];
+    this.emptyDays = [];
+    
+    const firstDayOfMonth = new Date(this.currentYear, this.currentMonth, 1);
+    const lastDayOfMonth = new Date(this.currentYear, this.currentMonth + 1, 0);
+    const daysInMonth = lastDayOfMonth.getDate();
+    
+    for (let i = 0; i < firstDayOfMonth.getDay(); i++) {
+      this.emptyDays.push({});
+    }
+
+    const today = new Date();
+    today.setHours(0,0,0,0);
+
+    for (let i = 1; i <= daysInMonth; i++) {
+      const date = new Date(this.currentYear, this.currentMonth, i);
+      const formatted = this.formatDate(date);
+      
+      this.calendarDays.push({
+        date: date,
+        dayNumber: i,
+        isBooked: this.blockedDates.has(formatted),
+        isPast: date < today
+      });
+    }
+  }
+
+  selectDate(day: any) {
+    if (day.isBooked || day.isPast) return;
+    this.errorMessage = '';
+
+    if (!this.startDate || (this.startDate && this.endDate)) {
+      this.startDate = day.date;
+      this.endDate = null;
+    } else if (this.startDate && !this.endDate) {
+      if (day.date < this.startDate) {
+        this.startDate = day.date;
+      } else {
+        if (this.checkOverlap(this.startDate, day.date)) {
+          this.errorMessage = "Période indisponible.";
+          return;
+        }
+        this.endDate = day.date;
       }
     }
-    this.isUploading = false;
   }
 
-  onFileSelected(event: any) {
-    this.handleFiles(event.target.files);
+  isSelected(date: Date): boolean {
+    return (!!this.startDate && date.getTime() === this.startDate.getTime()) || 
+           (!!this.endDate && date.getTime() === this.endDate.getTime());
   }
 
-  onDrop(event: DragEvent) {
-    event.preventDefault();
-    this.handleFiles(event.dataTransfer?.files || null);
-  }
-  
-  removeFile(index: number) {
-    this.uploadedFiles.splice(index, 1);
+  isInRange(date: Date): boolean {
+    if (!this.startDate || !this.endDate) return false;
+    return date > this.startDate && date < this.endDate;
   }
 
-  isImage(url: string): boolean {
-    const file = this.uploadedFiles.find(f => f.url === url);
-    return file ? file.type === 'image' : false;
+  formatDate(d: Date): string {
+    const year = d.getFullYear();
+    const month = ('0' + (d.getMonth() + 1)).slice(-2);
+    const day = ('0' + d.getDate()).slice(-2);
+    return `${year}-${month}-${day}`;
   }
 
-  async onSubmit() {
-    if (this.houseForm.invalid) return;
+  checkOverlap(start: Date, end: Date): boolean {
+    let current = new Date(start);
+    while (current <= end) {
+      if (this.blockedDates.has(this.formatDate(current))) return true;
+      current.setDate(current.getDate() + 1);
+    }
+    return false;
+  }
 
-    this.isSubmitting = true;
-    const formVal = this.houseForm.value;
+  getDaysCount() {
+    if(!this.startDate || !this.endDate) return 0;
+    const diff = Math.abs(this.endDate.getTime() - this.startDate.getTime());
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
+  }
 
-    const images = this.uploadedFiles.filter(f => f.type === 'image').map(f => f.url);
-    const videos = this.uploadedFiles.filter(f => f.type === 'video').map(f => f.url);
+  calculateTotal() {
+    return this.getDaysCount() * this.selectedHouse.price;
+  }
+
+  isValidDates() {
+    return this.startDate && this.endDate && !this.errorMessage;
+  }
+
+  resetSelection() {
+    this.startDate = null;
+    this.endDate = null;
+    this.errorMessage = '';
+    this.currentDate = new Date();
+    this.currentMonth = this.currentDate.getMonth();
+    this.currentYear = this.currentDate.getFullYear();
+  }
+
+  async confirmBooking() {
+    if(!this.isValidDates() || !this.userSignal()) return;
     
-    const mainImage = images.length > 0 ? images[0] : 'https://via.placeholder.com/600x400?text=Pas+d+image';
-
-    const houseData = {
-        ...formVal,
-        images,
-        videos,
-        imageUrl: mainImage
-    };
-
+    this.isSubmitting = true;
     try {
-      if (this.isEditMode && this.houseId) {
-        await this.firebaseService.updateHouse(this.houseId, houseData);
-        alert('Annonce mise à jour !');
-      } else {
-        await this.firebaseService.addHouse(houseData);
-        alert('Annonce publiée !');
-      }
-      this.router.navigate(['/admin-dashboard']);
-    } catch (error) {
-      console.error('Erreur:', error);
-      alert('Une erreur est survenue lors de la sauvegarde.');
+      await this.firebaseService.addBooking({
+        houseId: this.selectedHouse.id,
+        houseTitle: this.selectedHouse.title,
+        userId: this.userSignal()!.uid,
+        userEmail: this.userSignal()!.email || 'Anonyme',
+        startDate: this.formatDate(this.startDate!),
+        endDate: this.formatDate(this.endDate!),
+        totalPrice: this.calculateTotal(),
+        status: 'pending'
+      });
+      alert('Réservation envoyée !');
+      this.closeModal();
+      this.router.navigate(['/my-bookings']);
+    } catch (e) {
+      console.error(e);
+      alert('Erreur.');
     } finally {
       this.isSubmitting = false;
     }
@@ -483,275 +703,4 @@ export class AddHouseComponent implements OnInit {
 }
 EOF
 
-# 5. MISE A JOUR ADMIN DASHBOARD (Ajout Onglet Propriétés CRUD)
-echo "👑 Mise à jour AdminDashboard (Onglet Propriétés CRUD)..."
-cat > src/app/admin-dashboard/admin-dashboard.component.ts <<'EOF'
-import { Component, inject, OnInit } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { FirebaseService, Booking, FooterConfig, House } from '../services/firebase.service';
-import { Observable } from 'rxjs';
-import { map } from 'rxjs/operators';
-import { RouterLink, Router } from '@angular/router';
-
-@Component({
-  selector: 'app-admin-dashboard',
-  standalone: true,
-  imports: [CommonModule, RouterLink, FormsModule],
-  template: `
-    <div class="min-h-screen bg-gray-100 font-sans flex flex-col">
-      
-      <!-- Header Admin -->
-      <header class="bg-gray-900 text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <div class="flex items-center gap-2">
-            <div class="bg-red-600 text-white p-1.5 rounded font-bold">Admin</div>
-            <span class="text-xl font-bold tracking-tight">ElyesImmo Dashboard</span>
-          </div>
-          <div class="flex gap-4 items-center">
-            <a routerLink="/" class="text-gray-300 hover:text-white text-sm">Voir le site</a>
-            <button (click)="logout()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm transition">Déconnexion</button>
-          </div>
-        </div>
-      </header>
-
-      <div class="flex-grow max-w-7xl mx-auto w-full px-4 py-8">
-        
-        <!-- Navigation Onglets -->
-        <div class="flex space-x-4 mb-8 border-b border-gray-300 pb-2">
-          <button (click)="activeTab = 'properties'" [class.text-blue-600]="activeTab === 'properties'" [class.border-b-2]="activeTab === 'properties'" [class.border-blue-600]="activeTab === 'properties'" class="pb-2 font-medium text-gray-600 hover:text-blue-600 transition">
-            Propriétés (Maisons)
-          </button>
-          <button (click)="activeTab = 'bookings'" [class.text-blue-600]="activeTab === 'bookings'" [class.border-b-2]="activeTab === 'bookings'" [class.border-blue-600]="activeTab === 'bookings'" class="pb-2 font-medium text-gray-600 hover:text-blue-600 transition">
-            Demandes de Location
-          </button>
-          <button (click)="activeTab = 'settings'" [class.text-blue-600]="activeTab === 'settings'" [class.border-b-2]="activeTab === 'settings'" [class.border-blue-600]="activeTab === 'settings'" class="pb-2 font-medium text-gray-600 hover:text-blue-600 transition">
-            Paramètres du Site
-          </button>
-        </div>
-
-        <!-- ONGLET 1 : PROPRIÉTÉS (CRUD) -->
-        <div *ngIf="activeTab === 'properties'" class="animate-fade-in">
-          <div class="mb-6 flex justify-between items-end">
-             <h2 class="text-2xl font-bold text-gray-800">Gestion des Maisons</h2>
-             <a routerLink="/add" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded shadow flex items-center gap-2">
-                <span>+</span> Ajouter Maison
-             </a>
-          </div>
-
-          <div class="bg-white rounded-xl shadow-md overflow-hidden">
-             <div class="overflow-x-auto">
-               <table class="min-w-full divide-y divide-gray-200">
-                 <thead class="bg-gray-50">
-                   <tr>
-                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Image</th>
-                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Titre & Localisation</th>
-                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Prix/Nuit</th>
-                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Chambres</th>
-                     <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
-                   </tr>
-                 </thead>
-                 <tbody class="bg-white divide-y divide-gray-200" *ngIf="houses$ | async as houses">
-                   <tr *ngFor="let house of houses">
-                     <td class="px-6 py-4 whitespace-nowrap">
-                        <img [src]="house.imageUrl" class="h-10 w-10 rounded object-cover" alt="Maison">
-                     </td>
-                     <td class="px-6 py-4">
-                       <div class="text-sm font-medium text-gray-900">{{ house.title }}</div>
-                       <div class="text-xs text-gray-500">{{ house.location }}</div>
-                     </td>
-                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium">{{ house.price }} DT</td>
-                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{{ house.bedrooms }}</td>
-                     <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                       <a [routerLink]="['/add', house.id]" class="text-blue-600 hover:text-blue-900 mr-4">Modifier</a>
-                       <button (click)="deleteHouse(house.id!)" class="text-red-600 hover:text-red-900">Supprimer</button>
-                     </td>
-                   </tr>
-                   <tr *ngIf="houses.length === 0"><td colspan="5" class="px-6 py-10 text-center text-gray-500">Aucune propriété enregistrée.</td></tr>
-                 </tbody>
-               </table>
-             </div>
-          </div>
-        </div>
-
-        <!-- ONGLET 2 : RESERVATIONS -->
-        <div *ngIf="activeTab === 'bookings'" class="animate-fade-in">
-          <!-- Contenu du tableau de réservations existant -->
-          <h2 class="text-2xl font-bold text-gray-800 mb-6">Gestion des Demandes de Location</h2>
-          
-          <div class="bg-white rounded-xl shadow-md overflow-hidden">
-            <table class="min-w-full divide-y divide-gray-200">
-              <thead class="bg-gray-50">
-                <tr>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Client</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Propriété</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Dates</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
-                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase">Statut</th>
-                  <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase">Actions</th>
-                </tr>
-              </thead>
-              <tbody class="bg-white divide-y divide-gray-200" *ngIf="bookings$ | async as bookings">
-                <tr *ngFor="let booking of bookings">
-                  <td class="px-6 py-4 text-sm font-medium text-gray-900">{{ booking.userEmail }}</td>
-                  <td class="px-6 py-4 text-sm text-gray-500">{{ booking.houseTitle }}</td>
-                  <td class="px-6 py-4 text-sm text-gray-500">{{ booking.startDate }} > {{ booking.endDate }}</td>
-                  <td class="px-6 py-4 text-sm font-bold">{{ booking.totalPrice }} DT</td>
-                  <td class="px-6 py-4 text-center">
-                    <span class="px-2 py-1 text-xs rounded-full" [ngClass]="{'bg-yellow-100 text-yellow-800': booking.status==='pending', 'bg-green-100 text-green-800': booking.status==='approved', 'bg-red-100 text-red-800': booking.status==='rejected'}">
-                      {{ booking.status }}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4 text-right text-sm font-medium">
-                    <div *ngIf="booking.status === 'pending'">
-                      <button (click)="updateBookingStatus(booking.id!, 'approved')" class="text-green-600 hover:text-green-900 mr-3">Valider</button>
-                      <button (click)="updateBookingStatus(booking.id!, 'rejected')" class="text-red-600 hover:text-red-900">Refuser</button>
-                    </div>
-                    <span *ngIf="booking.status !== 'pending'" class="text-gray-400">Traité</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <!-- ONGLET 3 : PARAMETRES FOOTER -->
-        <div *ngIf="activeTab === 'settings'" class="animate-fade-in">
-          <div class="max-w-2xl bg-white p-8 rounded-xl shadow-md">
-            <h2 class="text-2xl font-bold text-gray-800 mb-6">Modifier le Pied de Page (Footer)</h2>
-            
-            <form (ngSubmit)="saveSettings()" *ngIf="footerConfig; else loadingSettings">
-              
-              <div class="space-y-4">
-                <div>
-                  <label class="block text-sm font-medium text-gray-700">Numéro de téléphone</label>
-                  <input type="text" [(ngModel)]="footerConfig.phone" name="phone" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-
-                <div>
-                  <label class="block text-sm font-medium text-gray-700">Adresse Email de contact</label>
-                  <input type="email" [(ngModel)]="footerConfig.email" name="email" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-
-                <div>
-                  <label class="block text-sm font-medium text-gray-700">Adresse Physique</label>
-                  <input type="text" [(ngModel)]="footerConfig.address" name="address" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-
-                <div>
-                  <label class="block text-sm font-medium text-gray-700">Texte Copyright</label>
-                  <input type="text" [(ngModel)]="footerConfig.copyright" name="copyright" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2 focus:ring-blue-500 focus:border-blue-500">
-                </div>
-              </div>
-
-              <div class="mt-8 pt-4 border-t border-gray-100 flex justify-end">
-                <button type="submit" [disabled]="isSaving" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50">
-                  {{ isSaving ? 'Sauvegarde...' : 'Enregistrer les modifications' }}
-                </button>
-              </div>
-              
-              <div *ngIf="saveMessage" class="mt-4 p-2 bg-green-100 text-green-700 rounded text-center">
-                {{ saveMessage }}
-              </div>
-
-            </form>
-            <ng-template #loadingSettings>Chargement de la configuration...</ng-template>
-          </div>
-        </div>
-
-      </div>
-    </div>
-  `
-})
-export class AdminDashboardComponent implements OnInit {
-  firebaseService = inject(FirebaseService);
-  router = inject(Router);
-  
-  // Onglets
-  activeTab: 'properties' | 'bookings' | 'settings' = 'properties';
-
-  // Data Houses
-  houses$: Observable<House[]> = this.firebaseService.getHouses();
-
-  // Data Bookings
-  bookings$: Observable<Booking[]> = this.firebaseService.getAllBookings();
-
-  // Data Settings
-  footerConfig: FooterConfig | null = null;
-  isSaving = false;
-  saveMessage = '';
-
-  ngOnInit() {
-    // Charger la config du footer
-    this.firebaseService.getFooterConfig().subscribe(config => {
-      this.footerConfig = config;
-    });
-  }
-
-  // Actions Bookings
-  async updateBookingStatus(id: string, status: 'approved' | 'rejected') {
-    if(confirm('Confirmer ?')) {
-      await this.firebaseService.updateBookingStatus(id, status);
-    }
-  }
-
-  // Actions Houses
-  async deleteHouse(id: string) {
-    if(confirm('Êtes-vous sûr de vouloir supprimer cette maison ? Cette action est irréversible.')) {
-      try {
-        await this.firebaseService.deleteHouse(id);
-        alert('Maison supprimée.');
-      } catch (e) {
-        console.error(e);
-        alert('Erreur lors de la suppression.');
-      }
-    }
-  }
-
-  // Actions Settings
-  async saveSettings() {
-    if(!this.footerConfig) return;
-    this.isSaving = true;
-    this.saveMessage = '';
-    
-    try {
-      await this.firebaseService.updateFooterConfig(this.footerConfig);
-      this.saveMessage = '✅ Footer mis à jour avec succès !';
-      setTimeout(() => this.saveMessage = '', 3000);
-    } catch (e) {
-      console.error(e);
-      alert('Erreur lors de la sauvegarde');
-    } finally {
-      this.isSaving = false;
-    }
-  }
-
-  logout() {
-    this.firebaseService.logout();
-  }
-}
-EOF
-
-# 6. MISE A JOUR ROUTING (Utilisation de l'ID pour la modification)
-echo "🛣️ Mise à jour du Routage (Modification: /add/:id)..."
-cat > src/app/app.routes.ts <<'EOF'
-import { Routes } from '@angular/router';
-import { HomeComponent } from './home/home.component';
-import { AddHouseComponent } from './add-house/add-house.component';
-import { LoginComponent } from './login/login.component';
-import { MyBookingsComponent } from './my-bookings/my-bookings.component';
-import { AdminDashboardComponent } from './admin-dashboard/admin-dashboard.component';
-
-export const routes: Routes = [
-  { path: '', component: HomeComponent },
-  // Pour la création et la modification (ajout/ID de maison)
-  { path: 'add', component: AddHouseComponent }, 
-  { path: 'add/:id', component: AddHouseComponent }, 
-  { path: 'login', component: LoginComponent },
-  { path: 'my-bookings', component: MyBookingsComponent },
-  { path: 'admin-dashboard', component: AdminDashboardComponent },
-  { path: '**', redirectTo: '' }
-];
-EOF
-
-echo "✅ Configuration Supabase mise à jour et intégrée !"
+echo "✅ Filtres ajoutés et logique de recherche configurée dans HomeComponent et FirebaseService. Lancez 'node scripts/seed_update.sh' pour ajouter des données de test !"

@@ -69,13 +69,36 @@ export class FirebaseService {
     return user?.email === 'elyes@gmail.com';
   }
 
-  // --- HOUSES CRUD ---
-  getHouses(): Observable<House[]> {
+  // --- HOUSES CRUD / FILTRAGE ---
+  // Fonction qui écoute les maisons avec un filtrage simple
+  getHouses(filters: { search?: string, maxPrice?: number, minBedrooms?: number } = {}): Observable<House[]> {
     return new Observable((observer) => {
       const colRef = collection(this.db, 'houses');
-      const q = query(colRef, orderBy('createdAt', 'desc'));
+      let q = query(colRef, orderBy('createdAt', 'desc'));
+      
+      // NOTE: Le filtrage par texte est limité dans Firestore aux opérations 'starts-with'.
+      // Le filtrage par prix et chambres se fera principalement côté client ou par des requêtes distinctes si plus complexe.
+      // Pour des raisons de simplicité et d'absence d'Index Firestore préconfiguré, nous filtrons tous les résultats côté client
+      // SAUF si le filtre est simple (ex: un seul 'where').
+      
       const unsubscribe = onSnapshot(q, (snapshot) => {
-          const houses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as House));
+          let houses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as House));
+          
+          // Filtrage côté client pour la démo
+          if (filters.search) {
+            const searchTerm = filters.search.toLowerCase();
+            houses = houses.filter(h => 
+              h.title.toLowerCase().includes(searchTerm) || 
+              h.location.toLowerCase().includes(searchTerm)
+            );
+          }
+          if (filters.maxPrice) {
+            houses = houses.filter(h => h.price <= filters.maxPrice!);
+          }
+          if (filters.minBedrooms) {
+            houses = houses.filter(h => h.bedrooms >= filters.minBedrooms!);
+          }
+
           observer.next(houses);
         }, (error) => observer.error(error));
       return () => unsubscribe();

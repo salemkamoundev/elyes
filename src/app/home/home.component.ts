@@ -1,19 +1,20 @@
-import { Component, inject, signal, HostListener } from '@angular/core';
+import { Component, inject, signal, HostListener, OnInit } from '@angular/core';
 import { CommonModule, DatePipe } from '@angular/common';
 import { RouterModule, Router } from '@angular/router';
-import { FormsModule } from '@angular/forms';
+import { FormsModule, ReactiveFormsModule, FormBuilder, FormGroup, Validators } from '@angular/forms';
 import { FirebaseService, Booking } from '../services/firebase.service';
-import { Observable } from 'rxjs';
+import { Observable, BehaviorSubject, combineLatest } from 'rxjs';
+import { switchMap, startWith, debounceTime } from 'rxjs/operators';
 import { User } from 'firebase/auth';
 
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [CommonModule, RouterModule, FormsModule, DatePipe],
+  imports: [CommonModule, RouterModule, FormsModule, DatePipe, ReactiveFormsModule],
   template: `
     <div class="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
       
-      <!-- Navbar -->
+      <!-- Navbar (Contenu inchangé) -->
       <nav class="bg-white/90 backdrop-blur-md shadow-sm sticky top-0 z-50 transition-all duration-300">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div class="flex justify-between h-16 items-center">
@@ -52,26 +53,59 @@ import { User } from 'firebase/auth';
                 class="w-full h-[120%] object-cover opacity-90 filter brightness-75" alt="Background">
          </div>
          
-         <!-- Contenu Hero -->
-         <div class="relative z-10 text-center px-4 animate-fade-in-up">
+         <!-- Contenu Hero et Formulaire de Filtre -->
+         <div class="relative z-10 text-center px-4 animate-fade-in-up w-full max-w-5xl">
             <h1 class="text-5xl md:text-7xl font-extrabold text-white mb-6 drop-shadow-lg tracking-tight">
               L'Excellence <br> <span class="text-blue-400">Immobilière</span>
             </h1>
-            <p class="text-xl md:text-2xl text-blue-100 mb-8 max-w-2xl mx-auto drop-shadow-md">
-              Découvrez des villas et appartements d'exception en Tunisie.
-            </p>
-            <button (click)="scrollToListings()" class="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-full font-bold text-lg shadow-xl transition transform hover:scale-105 flex items-center gap-2 mx-auto">
-              Explorer les biens
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 animate-bounce" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
-            </button>
+            
+            <!-- FORMULAIRE DE FILTRAGE -->
+            <form [formGroup]="filterForm" class="bg-white/95 backdrop-blur-sm p-6 rounded-xl shadow-2xl max-w-4xl mx-auto text-left transition-all duration-300">
+               <div class="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
+                   <!-- Recherche Texte -->
+                   <div class="md:col-span-2">
+                       <label class="block text-sm font-medium text-gray-700 mb-1">Recherche (Titre, Localisation)</label>
+                       <input formControlName="search" type="text" placeholder="Ex: Sousse, Villa, Tunis..." 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                   </div>
+                   
+                   <!-- Prix Max -->
+                   <div>
+                       <label class="block text-sm font-medium text-gray-700 mb-1">Prix Max (DT)</label>
+                       <input formControlName="maxPrice" type="number" placeholder="5000" 
+                              class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
+                   </div>
+                   
+                   <!-- Chambres Min -->
+                   <div>
+                       <label class="block text-sm font-medium text-gray-700 mb-1">Chambres Min</label>
+                       <select formControlName="minBedrooms" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 bg-white">
+                           <option value="0">Toutes</option>
+                           <option value="1">1+</option>
+                           <option value="2">2+</option>
+                           <option value="3">3+</option>
+                           <option value="4">4+</option>
+                       </select>
+                   </div>
+                   
+               </div>
+               <div class="mt-4 flex justify-end">
+                  <button type="button" (click)="resetFilters()" class="text-sm text-gray-500 hover:text-gray-700 transition">
+                     Réinitialiser les filtres
+                  </button>
+               </div>
+            </form>
          </div>
       </div>
 
       <!-- Listings Grid -->
       <div id="listings" class="max-w-7xl mx-auto px-4 py-16 flex-grow w-full">
-        <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Nos Propriétés Exclusives</h2>
+        <h2 class="text-3xl font-bold text-gray-900 mb-8 text-center">Propriétés disponibles ({{ (houses$ | async)?.length || 0 }})</h2>
         
         <div *ngIf="houses$ | async as houses; else loading">
+          <div *ngIf="houses.length === 0" class="text-center py-10 bg-white rounded-xl shadow">
+             <p class="text-gray-500">Aucune maison ne correspond à vos critères de recherche.</p>
+          </div>
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-10">
             <div *ngFor="let house of houses" class="bg-white rounded-2xl shadow-lg overflow-hidden hover:shadow-2xl transition duration-500 group border border-gray-100 flex flex-col h-full transform hover:-translate-y-1">
               
@@ -114,7 +148,7 @@ import { User } from 'firebase/auth';
         </ng-template>
       </div>
 
-      <!-- MODAL DE RÉSERVATION & GALERIE -->
+      <!-- MODAL DE RÉSERVATION & GALERIE (Contenu inchangé) -->
       <div *ngIf="selectedHouse" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-60 backdrop-blur-sm transition-opacity">
         <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full overflow-hidden flex flex-col md:flex-row max-h-[90vh]">
           
@@ -205,10 +239,16 @@ import { User } from 'firebase/auth';
     </div>
   `
 })
-export class HomeComponent {
+export class HomeComponent implements OnInit {
   firebaseService = inject(FirebaseService);
   router = inject(Router);
-  houses$: Observable<any[]> = this.firebaseService.getHouses();
+  fb = inject(FormBuilder);
+  
+  // Observable pour les données des maisons filtrées
+  private filtersSubject = new BehaviorSubject<{ search?: string, maxPrice?: number, minBedrooms?: number }>({});
+  houses$: Observable<any[]>;
+
+  filterForm: FormGroup;
   
   userSignal = signal<User | null>(null);
   
@@ -231,13 +271,46 @@ export class HomeComponent {
 
   constructor() {
     this.firebaseService.user$.subscribe(u => this.userSignal.set(u));
+    
+    // Initialisation du formulaire de filtre
+    this.filterForm = this.fb.group({
+      search: [''],
+      maxPrice: [null],
+      minBedrooms: [0]
+    });
+
+    // Écouter les changements du formulaire et les appliquer aux filtres
+    this.filterForm.valueChanges.pipe(
+      debounceTime(300), // Attendre 300ms après la frappe
+      startWith(this.filterForm.value)
+    ).subscribe(filters => {
+      // Nettoyer les valeurs nulles ou vides
+      const cleanFilters: any = {};
+      if (filters.search) cleanFilters.search = filters.search;
+      if (filters.maxPrice) cleanFilters.maxPrice = filters.maxPrice;
+      if (filters.minBedrooms && filters.minBedrooms !== '0') cleanFilters.minBedrooms = parseInt(filters.minBedrooms, 10);
+      
+      this.filtersSubject.next(cleanFilters);
+    });
+
+    // Pipe pour récupérer les maisons en fonction des filtres
+    this.houses$ = this.filtersSubject.pipe(
+      switchMap(filters => this.firebaseService.getHouses(filters))
+    );
+  }
+
+  ngOnInit() {
+    // Initialisation HostListener
+  }
+
+  resetFilters() {
+    this.filterForm.reset({ search: '', maxPrice: null, minBedrooms: 0 });
   }
 
   // PARALLAX LISTENER
   @HostListener('window:scroll', ['$event'])
-  onWindowScroll(event: Event) { // CORRECTION : Ajout de l'argument 'event: Event'
+  onWindowScroll(event: Event) {
     const scrollY = window.scrollY;
-    // On limite l'effet pour ne pas surcharger le rendu
     if (scrollY < 800) {
       this.parallaxOffset = scrollY * 0.5;
     }
