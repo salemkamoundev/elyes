@@ -1,35 +1,25 @@
 import { Injectable } from '@angular/core';
 import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  Auth, 
-  signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword, 
-  signInWithPopup,
-  GoogleAuthProvider,
-  signOut,
-  onAuthStateChanged,
-  User
-} from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  addDoc, 
-  onSnapshot, 
-  Firestore,
-  serverTimestamp,
-  query,
-  where,
-  orderBy,
-  doc,
-  updateDoc,
-  setDoc,
-  getDoc
-} from 'firebase/firestore';
+import { getAuth, Auth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, User } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, Firestore, serverTimestamp, query, where, orderBy, doc, updateDoc, setDoc, deleteDoc, getDoc } from 'firebase/firestore';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 
-// Interfaces
+// Nouvelle Interface House avec support multimédia
+export interface House {
+  id?: string;
+  title: string;
+  price: number;
+  location: string;
+  description: string;
+  // On garde imageUrl pour la compatibilité, mais on ajoute les listes
+  imageUrl: string; 
+  images: string[];
+  videos: string[];
+  bedrooms: number;
+  createdAt: any;
+}
+
 export interface Booking {
   id?: string;
   houseId: string;
@@ -79,25 +69,41 @@ export class FirebaseService {
     return user?.email === 'elyes@gmail.com';
   }
 
-  // --- HOUSES ---
-  getHouses(): Observable<any[]> {
+  // --- HOUSES CRUD ---
+  getHouses(): Observable<House[]> {
     return new Observable((observer) => {
       const colRef = collection(this.db, 'houses');
       const q = query(colRef, orderBy('createdAt', 'desc'));
-      const unsubscribe = onSnapshot(q, 
-        (snapshot) => {
-          const houses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+          const houses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as House));
           observer.next(houses);
-        },
-        (error) => observer.error(error)
-      );
+        }, (error) => observer.error(error));
       return () => unsubscribe();
     });
   }
 
-  async addHouse(houseData: any): Promise<any> {
+  async getHouseById(id: string): Promise<House | null> {
+    const docRef = doc(this.db, 'houses', id);
+    const docSnap = await getDoc(docRef);
+    if (docSnap.exists()) {
+        return { id: docSnap.id, ...docSnap.data() } as House;
+    }
+    return null;
+  }
+
+  async addHouse(houseData: Omit<House, 'id' | 'createdAt'>): Promise<void> {
     const colRef = collection(this.db, 'houses');
-    return await addDoc(colRef, { ...houseData, createdAt: serverTimestamp() });
+    await addDoc(colRef, { ...houseData, createdAt: serverTimestamp() });
+  }
+  
+  async updateHouse(id: string, houseData: Partial<House>): Promise<void> {
+    const docRef = doc(this.db, 'houses', id);
+    await updateDoc(docRef, houseData);
+  }
+
+  async deleteHouse(id: string): Promise<void> {
+    const docRef = doc(this.db, 'houses', id);
+    await deleteDoc(docRef);
   }
 
   // --- BOOKINGS ---
@@ -130,17 +136,14 @@ export class FirebaseService {
     });
   }
 
-  // NOUVEAU : Récupérer les réservations approuvées pour une maison spécifique (pour le calendrier)
   getApprovedBookingsForHouse(houseId: string): Observable<Booking[]> {
     return new Observable((observer) => {
       const colRef = collection(this.db, 'bookings');
-      // On récupère tout pour cette maison, on filtrera 'approved'
       const q = query(colRef, where('houseId', '==', houseId));
-      
       const unsubscribe = onSnapshot(q, (snapshot) => {
         const bookings = snapshot.docs
           .map(doc => ({ id: doc.id, ...doc.data() } as Booking))
-          .filter(b => b.status === 'approved'); // Seulement les validées bloquent le calendrier
+          .filter(b => b.status === 'approved');
         observer.next(bookings);
       });
       return () => unsubscribe();
@@ -152,7 +155,7 @@ export class FirebaseService {
     return await updateDoc(docRef, { status });
   }
 
-  // --- FOOTER CONFIG ---
+  // --- FOOTER ---
   getFooterConfig(): Observable<FooterConfig> {
     return new Observable((observer) => {
       const docRef = doc(this.db, 'settings', 'footer');
@@ -160,12 +163,7 @@ export class FirebaseService {
         if (docSnap.exists()) {
           observer.next(docSnap.data() as FooterConfig);
         } else {
-          observer.next({
-            phone: '+216 215 415 425',
-            email: 'elyes@gmail.com',
-            address: 'Tunis, Tunisie',
-            copyright: '2025 ElyesImmo'
-          });
+          observer.next({ phone: '+216 215 415 425', email: 'elyes@gmail.com', address: 'Tunis', copyright: '2025 ElyesImmo' });
         }
       });
       return () => unsubscribe();

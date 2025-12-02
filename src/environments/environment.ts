@@ -10,7 +10,9 @@ export const environment = {
     measurementId: 'G-7L01JCJPEQ'
   },
   supabaseConfig: {
-    secret: 'sb_secret_Qxw6yEx9L0hDSNg6uZo4Yg_GvmWX68x',
-    publishable: 'sb_publishable_zgqJtHLLSJ0bCB0b545I8A_CMDlUTqT'
+    // CLÉ SECRÈTE UTILISÉE TEMPORAIREMENT POUR LE DÉVELOPPEMENT. DOIT ÊTRE REMPLACÉE PAR LA CLÉ PUBLIQUE + RLS EN PROD.
+    url: 'https://qailxxltsofkgtfkgzhv.supabase.co',
+    key: 'sb_secret_Qxw6yEx9L0hDSNg6uZo4Yg_GvmWX68x', 
+    bucket: 'propositionspourkerkennah' 
   }
 };

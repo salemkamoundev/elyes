@@ -7,7 +7,9 @@ import { AdminDashboardComponent } from './admin-dashboard/admin-dashboard.compo
 
 export const routes: Routes = [
   { path: '', component: HomeComponent },
-  { path: 'add', component: AddHouseComponent },
+  // Pour la création et la modification (ajout/ID de maison)
+  { path: 'add', component: AddHouseComponent }, 
+  { path: 'add/:id', component: AddHouseComponent }, 
   { path: 'login', component: LoginComponent },
   { path: 'my-bookings', component: MyBookingsComponent },
   { path: 'admin-dashboard', component: AdminDashboardComponent },
