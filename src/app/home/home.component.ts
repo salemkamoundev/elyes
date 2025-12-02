@@ -1,6 +1,6 @@
 import { Component, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { RouterModule } from '@angular/router'; 
+import { RouterModule } from '@angular/router';
 import { FirebaseService } from '../services/firebase.service';
 import { Observable } from 'rxjs';
 
@@ -15,6 +15,8 @@ import { Observable } from 'rxjs';
       <nav class="bg-white shadow-sm sticky top-0 z-50">
         <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div class="flex justify-between h-16 items-center">
+            
+            <!-- Logo -->
             <div class="flex items-center gap-2 cursor-pointer" routerLink="/">
               <div class="bg-blue-600 text-white p-1 rounded">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -23,13 +25,38 @@ import { Observable } from 'rxjs';
               </div>
               <span class="font-bold text-xl tracking-tight text-blue-900">ElyesImmo</span>
             </div>
-            <div>
-              <a routerLink="/add" class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition shadow flex items-center gap-2 text-sm font-medium">
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                </svg>
-                Ajouter
-              </a>
+
+            <!-- Actions Droite -->
+            <div class="flex items-center gap-4">
+              
+              <!-- Affichage conditionnel selon Auth -->
+              <ng-container *ngIf="firebaseService.user$ | async as user; else loginBtn">
+                 <div class="hidden md:flex items-center gap-2 text-sm text-gray-600 mr-2">
+                    <span class="w-2 h-2 rounded-full bg-green-500"></span>
+                    {{ user.email }}
+                 </div>
+                 
+                 <button (click)="logout()" class="text-gray-500 hover:text-red-600 text-sm font-medium transition">
+                    Déconnexion
+                 </button>
+
+                 <a routerLink="/add" class="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition shadow flex items-center gap-2 text-sm font-medium">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                  </svg>
+                  Ajouter
+                </a>
+              </ng-container>
+
+              <ng-template #loginBtn>
+                <a routerLink="/login" class="text-blue-600 hover:text-blue-800 font-medium text-sm">
+                  Se connecter
+                </a>
+                <a routerLink="/add" class="opacity-50 cursor-not-allowed bg-gray-300 text-white px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium" title="Connectez-vous pour ajouter">
+                   Ajouter
+                </a>
+              </ng-template>
+
             </div>
           </div>
         </div>
@@ -58,7 +85,7 @@ import { Observable } from 'rxjs';
 
         <div *ngIf="houses$ | async as houses; else loading">
           <div *ngIf="houses.length === 0" class="text-center py-10 bg-white rounded shadow text-gray-500">
-            Aucune annonce pour le moment. Soyez le premier à publier !
+            Aucune annonce pour le moment.
           </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
@@ -91,6 +118,10 @@ import { Observable } from 'rxjs';
   `
 })
 export class HomeComponent {
-  private firebaseService = inject(FirebaseService);
+  firebaseService = inject(FirebaseService);
   houses$: Observable<any[]> = this.firebaseService.getHouses();
+
+  logout() {
+    this.firebaseService.logout();
+  }
 }
