@@ -6,10 +6,10 @@ if [ -d "elyes-immo" ]; then
     cd elyes-immo
 fi
 
-echo "🚀 Création du Dashboard Administrateur et restructuration du menu..."
+echo "📅 Ajout du Calendrier de Disponibilité (Gestion des conflits)..."
 
-# 1. SERVICE FIREBASE (Confirmation des fonctions Admin)
-# On s'assure que updateBookingStatus est bien présent et correct
+# --- 1. MISE A JOUR DU SERVICE (Récupérer les dates bloquées) ---
+echo "🛠️ Mise à jour de FirebaseService..."
 cat > src/app/services/firebase.service.ts <<'EOF'
 import { Injectable } from '@angular/core';
 import { initializeApp } from 'firebase/app';
@@ -35,11 +35,14 @@ import {
   where,
   orderBy,
   doc,
-  updateDoc
+  updateDoc,
+  setDoc,
+  getDoc
 } from 'firebase/firestore';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 
+// Interfaces
 export interface Booking {
   id?: string;
   houseId: string;
@@ -51,6 +54,15 @@ export interface Booking {
   totalPrice: number;
   status: 'pending' | 'approved' | 'rejected';
   createdAt: any;
+}
+
+export interface FooterConfig {
+  phone: string;
+  email: string;
+  address: string;
+  copyright: string;
+  facebookUrl?: string;
+  instagramUrl?: string;
 }
 
 @Injectable({
@@ -104,11 +116,7 @@ export class FirebaseService {
   // --- BOOKINGS ---
   async addBooking(booking: Partial<Booking>) {
     const colRef = collection(this.db, 'bookings');
-    return await addDoc(colRef, {
-      ...booking,
-      status: 'pending',
-      createdAt: serverTimestamp()
-    });
+    return await addDoc(colRef, { ...booking, status: 'pending', createdAt: serverTimestamp() });
   }
 
   getUserBookings(userId: string): Observable<Booking[]> {
@@ -135,206 +143,72 @@ export class FirebaseService {
     });
   }
 
-  // Action Admin : Valider ou Refuser
+  // NOUVEAU : Récupérer les réservations approuvées pour une maison spécifique (pour le calendrier)
+  getApprovedBookingsForHouse(houseId: string): Observable<Booking[]> {
+    return new Observable((observer) => {
+      const colRef = collection(this.db, 'bookings');
+      // On récupère tout pour cette maison, on filtrera 'approved'
+      const q = query(colRef, where('houseId', '==', houseId));
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const bookings = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() } as Booking))
+          .filter(b => b.status === 'approved'); // Seulement les validées bloquent le calendrier
+        observer.next(bookings);
+      });
+      return () => unsubscribe();
+    });
+  }
+
   async updateBookingStatus(bookingId: string, status: 'approved' | 'rejected') {
     const docRef = doc(this.db, 'bookings', bookingId);
     return await updateDoc(docRef, { status });
   }
-}
-EOF
 
-# 2. NOUVEAU DASHBOARD ADMIN COMPLET
-# Remplace l'ancien AdminBookingsComponent par un Dashboard complet
-echo "👑 Création de AdminDashboardComponent..."
-mkdir -p src/app/admin-dashboard
-cat > src/app/admin-dashboard/admin-dashboard.component.ts <<'EOF'
-import { Component, inject } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FirebaseService, Booking } from '../services/firebase.service';
-import { Observable } from 'rxjs';
-import { map } from 'rxjs/operators';
-import { RouterLink } from '@angular/router';
-
-@Component({
-  selector: 'app-admin-dashboard',
-  standalone: true,
-  imports: [CommonModule, RouterLink],
-  template: `
-    <div class="min-h-screen bg-gray-100 font-sans flex flex-col">
-      
-      <!-- Header Admin -->
-      <header class="bg-gray-900 text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4 py-4 flex justify-between items-center">
-          <div class="flex items-center gap-2">
-            <div class="bg-red-600 text-white p-1.5 rounded font-bold">Admin</div>
-            <span class="text-xl font-bold tracking-tight">ElyesImmo Dashboard</span>
-          </div>
-          <div class="flex gap-4 items-center">
-            <a routerLink="/" class="text-gray-300 hover:text-white text-sm">Voir le site</a>
-            <button (click)="logout()" class="bg-gray-800 hover:bg-gray-700 px-3 py-1 rounded text-sm transition">
-              Déconnexion
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <div class="flex-grow max-w-7xl mx-auto w-full px-4 py-8">
-        
-        <!-- Actions Rapides -->
-        <div class="mb-8 flex justify-between items-end">
-          <div>
-            <h1 class="text-3xl font-bold text-gray-800">Vue d'ensemble</h1>
-            <p class="text-gray-500">Gérez vos propriétés et les demandes de location.</p>
-          </div>
-          <a routerLink="/add" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow-md flex items-center gap-2 transition transform hover:scale-105">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-            </svg>
-            Ajouter une nouvelle maison
-          </a>
-        </div>
-
-        <!-- Statistiques (Simulation) -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <div class="text-gray-500 text-sm mb-1">Total Demandes</div>
-            <div class="text-3xl font-bold text-blue-600" *ngIf="bookings$ | async as b">{{ b.length }}</div>
-          </div>
-          <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <div class="text-gray-500 text-sm mb-1">En attente</div>
-            <div class="text-3xl font-bold text-yellow-500" *ngIf="pendingCount$ | async as count">{{ count }}</div>
-          </div>
-          <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-            <div class="text-gray-500 text-sm mb-1">Revenus Estimés (Validés)</div>
-            <div class="text-3xl font-bold text-green-600" *ngIf="revenue$ | async as rev">{{ rev }} DT</div>
-          </div>
-        </div>
-
-        <!-- Tableau des réservations -->
-        <div class="bg-white rounded-xl shadow-md overflow-hidden">
-          <div class="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
-            <h3 class="font-bold text-gray-700">Dernières demandes de location</h3>
-          </div>
-          
-          <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
-              <thead class="bg-gray-50">
-                <tr>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Client</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Propriété</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Période</th>
-                  <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
-                  <th class="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Statut</th>
-                  <th class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                </tr>
-              </thead>
-              <tbody class="bg-white divide-y divide-gray-200" *ngIf="bookings$ | async as bookings; else loading">
-                <tr *ngFor="let booking of bookings" class="hover:bg-gray-50 transition">
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <div class="text-sm font-medium text-gray-900">{{ booking.userEmail }}</div>
-                    <div class="text-xs text-gray-400">ID: {{ booking.userId.substring(0,8) }}...</div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <div class="text-sm text-gray-900 font-medium">{{ booking.houseTitle }}</div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap">
-                    <div class="text-sm text-gray-600">{{ booking.startDate }} <span class="text-gray-400">➔</span> {{ booking.endDate }}</div>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800">
-                    {{ booking.totalPrice }} DT
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-center">
-                    <span class="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full"
-                      [ngClass]="{
-                        'bg-yellow-100 text-yellow-800': booking.status === 'pending',
-                        'bg-green-100 text-green-800': booking.status === 'approved',
-                        'bg-red-100 text-red-800': booking.status === 'rejected'
-                      }">
-                      {{ booking.status === 'pending' ? 'En attente' : (booking.status === 'approved' ? 'Validée' : 'Refusée') }}
-                    </span>
-                  </td>
-                  <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    <div *ngIf="booking.status === 'pending'" class="flex justify-end gap-2">
-                      <button (click)="updateStatus(booking.id!, 'approved')" class="bg-green-50 text-green-700 hover:bg-green-100 px-3 py-1 rounded border border-green-200 transition">
-                        Accepter
-                      </button>
-                      <button (click)="updateStatus(booking.id!, 'rejected')" class="bg-red-50 text-red-700 hover:bg-red-100 px-3 py-1 rounded border border-red-200 transition">
-                        Refuser
-                      </button>
-                    </div>
-                    <div *ngIf="booking.status !== 'pending'" class="text-gray-400 italic text-xs">
-                      Traité
-                    </div>
-                  </td>
-                </tr>
-                <tr *ngIf="bookings.length === 0">
-                  <td colspan="6" class="px-6 py-10 text-center text-gray-500">
-                    Aucune demande de location pour le moment.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-          <ng-template #loading>
-            <div class="p-10 text-center text-gray-500">Chargement des données...</div>
-          </ng-template>
-        </div>
-      </div>
-    </div>
-  `
-})
-export class AdminDashboardComponent {
-  firebaseService = inject(FirebaseService);
-  
-  bookings$: Observable<Booking[]> = this.firebaseService.getAllBookings();
-  
-  // Calcul des stats en temps réel
-  pendingCount$ = this.bookings$.pipe(
-    map(bookings => bookings.filter(b => b.status === 'pending').length)
-  );
-  
-  revenue$ = this.bookings$.pipe(
-    map(bookings => bookings
-      .filter(b => b.status === 'approved')
-      .reduce((acc, curr) => acc + curr.totalPrice, 0)
-    )
-  );
-
-  async updateStatus(id: string, status: 'approved' | 'rejected') {
-    const action = status === 'approved' ? 'accepter' : 'refuser';
-    if(confirm(`Voulez-vous vraiment ${action} cette demande ?`)) {
-      try {
-        await this.firebaseService.updateBookingStatus(id, status);
-      } catch (e) {
-        console.error(e);
-        alert("Erreur lors de la mise à jour.");
-      }
-    }
+  // --- FOOTER CONFIG ---
+  getFooterConfig(): Observable<FooterConfig> {
+    return new Observable((observer) => {
+      const docRef = doc(this.db, 'settings', 'footer');
+      const unsubscribe = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+          observer.next(docSnap.data() as FooterConfig);
+        } else {
+          observer.next({
+            phone: '+216 215 415 425',
+            email: 'elyes@gmail.com',
+            address: 'Tunis, Tunisie',
+            copyright: '2025 ElyesImmo'
+          });
+        }
+      });
+      return () => unsubscribe();
+    });
   }
 
-  logout() {
-    this.firebaseService.logout();
+  async updateFooterConfig(config: FooterConfig) {
+    const docRef = doc(this.db, 'settings', 'footer');
+    return await setDoc(docRef, config, { merge: true });
   }
 }
 EOF
 
-# 3. MISE À JOUR HOME (Nettoyage Menu)
-echo "🏠 Mise à jour du Menu Principal (Séparation Admin/User)..."
+# --- 2. MISE A JOUR HOME (Intégration Calendrier) ---
+echo "📅 Mise à jour de HomeComponent avec Calendrier Visuel..."
 cat > src/app/home/home.component.ts <<'EOF'
 import { Component, inject, signal } from '@angular/core';
-import { CommonModule } from '@angular/common';
+import { CommonModule, DatePipe } from '@angular/common';
 import { RouterModule, Router } from '@angular/router';
 import { FormsModule } from '@angular/forms';
-import { FirebaseService } from '../services/firebase.service';
+import { FirebaseService, Booking } from '../services/firebase.service';
 import { Observable } from 'rxjs';
 import { User } from 'firebase/auth';
 
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [CommonModule, RouterModule, FormsModule],
+  imports: [CommonModule, RouterModule, FormsModule, DatePipe],
   template: `
-    <div class="min-h-screen bg-gray-50 font-sans text-gray-800">
+    <div class="min-h-screen bg-gray-50 font-sans text-gray-800 flex flex-col">
       
       <!-- Navbar -->
       <nav class="bg-white shadow-sm sticky top-0 z-50">
@@ -353,19 +227,15 @@ import { User } from 'firebase/auth';
 
             <!-- Menu Droite -->
             <div class="flex items-center gap-4">
-              
-              <!-- Cas Utilisateur Connecté -->
               <ng-container *ngIf="userSignal() as user; else loginBtn">
-                 
-                 <!-- Si ADMIN -->
+                 <!-- Menu Admin -->
                  <ng-container *ngIf="firebaseService.isAdmin(user); else userMenu">
                     <a routerLink="/admin-dashboard" class="bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-bold flex items-center gap-2 hover:bg-gray-700 transition shadow-lg">
-                      <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                       Dashboard Admin
                     </a>
                  </ng-container>
 
-                 <!-- Si USER NORMAL -->
+                 <!-- Menu User -->
                  <ng-template #userMenu>
                     <div class="hidden md:flex items-center gap-2 text-sm text-gray-600 mr-2">
                       <span class="w-2 h-2 rounded-full bg-green-500"></span>
@@ -378,16 +248,13 @@ import { User } from 'firebase/auth';
                       Déconnexion
                     </button>
                  </ng-template>
-
               </ng-container>
 
-              <!-- Cas Non Connecté -->
               <ng-template #loginBtn>
                 <a routerLink="/login" class="text-blue-600 font-medium text-sm border border-blue-600 px-4 py-2 rounded hover:bg-blue-50 transition">
                   Se connecter
                 </a>
               </ng-template>
-
             </div>
           </div>
         </div>
@@ -405,7 +272,7 @@ import { User } from 'firebase/auth';
       </div>
 
       <!-- Listings Grid -->
-      <div class="max-w-7xl mx-auto px-4 py-12">
+      <div class="max-w-7xl mx-auto px-4 py-12 flex-grow">
         <h2 class="text-2xl font-bold text-gray-900 mb-6">Nos propriétés disponibles</h2>
         
         <div *ngIf="houses$ | async as houses; else loading">
@@ -431,7 +298,7 @@ import { User } from 'firebase/auth';
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    Réserver
+                    Voir disponibilité & Réserver
                   </button>
                 </div>
               </div>
@@ -443,39 +310,102 @@ import { User } from 'firebase/auth';
         </ng-template>
       </div>
 
-      <!-- MODAL DE RÉSERVATION -->
+      <!-- MODAL DE RÉSERVATION AVEC CALENDRIER -->
       <div *ngIf="selectedHouse" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 backdrop-blur-sm">
-        <div class="bg-white rounded-xl shadow-2xl max-w-md w-full overflow-hidden animate-fade-in">
-          <div class="bg-blue-600 p-4 flex justify-between items-center text-white">
-            <h3 class="font-bold text-lg">Réserver : {{ selectedHouse.title }}</h3>
-            <button (click)="closeModal()" class="text-white hover:text-gray-200 text-xl">&times;</button>
+        <div class="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden animate-fade-in flex flex-col max-h-[90vh]">
+          
+          <!-- Modal Header -->
+          <div class="bg-blue-600 p-4 flex justify-between items-center text-white shrink-0">
+            <div>
+              <h3 class="font-bold text-lg">{{ selectedHouse.title }}</h3>
+              <p class="text-sm opacity-90 text-blue-100">{{ selectedHouse.price }} DT / nuit</p>
+            </div>
+            <button (click)="closeModal()" class="text-white hover:text-gray-200 text-2xl font-bold">&times;</button>
           </div>
           
-          <div class="p-6">
-            <p class="text-gray-600 text-sm mb-4">Prix par nuit : <span class="font-bold text-blue-600">{{ selectedHouse.price }} DT</span></p>
+          <!-- Modal Body (Scrollable) -->
+          <div class="p-6 overflow-y-auto">
             
-            <div class="space-y-4">
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Date d'arrivée</label>
-                <input type="date" [(ngModel)]="bookingData.startDate" class="w-full border rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
-              </div>
-              <div>
-                <label class="block text-sm font-medium text-gray-700 mb-1">Date de départ</label>
-                <input type="date" [(ngModel)]="bookingData.endDate" class="w-full border rounded p-2 focus:ring-2 focus:ring-blue-500 outline-none">
+            <h4 class="font-bold text-gray-700 mb-3 flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+              Sélectionnez vos dates
+            </h4>
+
+            <!-- CALENDRIER -->
+            <div class="mb-6 border rounded-lg p-4 bg-gray-50">
+              
+              <!-- Contrôles Mois -->
+              <div class="flex justify-between items-center mb-4">
+                <button (click)="changeMonth(-1)" class="p-1 hover:bg-gray-200 rounded">◀</button>
+                <span class="font-bold text-gray-800">{{ currentMonthName }} {{ currentYear }}</span>
+                <button (click)="changeMonth(1)" class="p-1 hover:bg-gray-200 rounded">▶</button>
               </div>
 
-              <div *ngIf="calculateTotal() > 0" class="bg-blue-50 p-3 rounded text-center">
-                 <p class="text-sm text-gray-600">Total estimé pour {{ getDays() }} nuits</p>
-                 <p class="text-2xl font-bold text-blue-700">{{ calculateTotal() }} DT</p>
+              <!-- Jours Semaine -->
+              <div class="grid grid-cols-7 text-center text-xs font-semibold text-gray-500 mb-2">
+                <div>Dim</div><div>Lun</div><div>Mar</div><div>Mer</div><div>Jeu</div><div>Ven</div><div>Sam</div>
+              </div>
+
+              <!-- Grille Jours -->
+              <div class="grid grid-cols-7 gap-1">
+                <!-- Espaces vides début mois -->
+                <div *ngFor="let empty of emptyDays" class="h-8"></div>
+                
+                <!-- Jours -->
+                <button *ngFor="let day of calendarDays" 
+                  (click)="selectDate(day)"
+                  [disabled]="day.isBooked || day.isPast"
+                  class="h-9 w-9 rounded-full text-sm flex items-center justify-center transition relative"
+                  [ngClass]="{
+                    'bg-red-100 text-red-400 cursor-not-allowed line-through': day.isBooked,
+                    'text-gray-300 cursor-not-allowed': day.isPast && !day.isBooked,
+                    'bg-blue-600 text-white font-bold shadow-lg transform scale-110': isSelected(day.date),
+                    'bg-blue-100 text-blue-800': isInRange(day.date),
+                    'hover:bg-blue-200 text-gray-700': !day.isBooked && !day.isPast && !isSelected(day.date) && !isInRange(day.date)
+                  }">
+                  {{ day.dayNumber }}
+                </button>
+              </div>
+
+              <div class="mt-4 flex gap-4 text-xs justify-center">
+                <div class="flex items-center gap-1"><span class="w-3 h-3 bg-white border rounded-full"></span> Libre</div>
+                <div class="flex items-center gap-1"><span class="w-3 h-3 bg-red-100 border border-red-200 rounded-full"></span> Réservé</div>
+                <div class="flex items-center gap-1"><span class="w-3 h-3 bg-blue-600 rounded-full"></span> Sélection</div>
               </div>
             </div>
 
-            <div class="mt-6 flex gap-3">
-              <button (click)="closeModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-50">Annuler</button>
-              <button (click)="confirmBooking()" [disabled]="!isValidDates()" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed">
-                Confirmer
-              </button>
+            <!-- Récapitulatif -->
+            <div class="space-y-2 mb-4" *ngIf="startDate && endDate">
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-600">Arrivée :</span>
+                <span class="font-medium">{{ startDate | date:'dd/MM/yyyy' }}</span>
+              </div>
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-600">Départ :</span>
+                <span class="font-medium">{{ endDate | date:'dd/MM/yyyy' }}</span>
+              </div>
+              <div class="flex justify-between text-sm border-t pt-2 mt-2">
+                <span class="font-bold text-gray-800">Total ({{ getDaysCount() }} nuits) :</span>
+                <span class="font-bold text-blue-600 text-lg">{{ calculateTotal() }} DT</span>
+              </div>
             </div>
+            
+            <div *ngIf="(!startDate || !endDate) && !errorMessage" class="text-center text-sm text-gray-500 italic py-2">
+              Cliquez sur une date de début puis une date de fin.
+            </div>
+
+            <div *ngIf="errorMessage" class="bg-red-50 text-red-600 p-2 rounded text-sm text-center mb-4 border border-red-200">
+              {{ errorMessage }}
+            </div>
+
+          </div>
+
+          <!-- Modal Footer -->
+          <div class="p-4 border-t bg-gray-50 flex gap-3 shrink-0">
+            <button (click)="closeModal()" class="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded hover:bg-gray-100">Annuler</button>
+            <button (click)="confirmBooking()" [disabled]="!isValidDates() || isSubmitting" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-bold shadow">
+              {{ isSubmitting ? 'Envoi...' : 'Confirmer' }}
+            </button>
           </div>
         </div>
       </div>
@@ -490,90 +420,200 @@ export class HomeComponent {
   
   userSignal = signal<User | null>(null);
   
+  // Gestion Modal & Calendrier
   selectedHouse: any = null;
-  bookingData = { startDate: '', endDate: '' };
+  blockedDates: Set<string> = new Set(); // Format "YYYY-MM-DD"
+  
+  currentDate = new Date();
+  currentMonth = this.currentDate.getMonth();
+  currentYear = this.currentDate.getFullYear();
+  
+  calendarDays: any[] = [];
+  emptyDays: any[] = []; // Pour décaler le début du mois
+  
+  startDate: Date | null = null;
+  endDate: Date | null = null;
+  
+  errorMessage = '';
+  isSubmitting = false;
 
   constructor() {
     this.firebaseService.user$.subscribe(u => this.userSignal.set(u));
   }
 
+  get currentMonthName(): string {
+    return new Date(this.currentYear, this.currentMonth).toLocaleString('fr-FR', { month: 'long' });
+  }
+
   logout() { this.firebaseService.logout(); }
 
+  // 1. Ouvrir Modal et charger les dispos
   openBookingModal(house: any) {
     if (!this.userSignal()) {
-      alert("Vous devez être connecté pour réserver.");
+      alert("Connectez-vous pour voir les disponibilités.");
       this.router.navigate(['/login']);
       return;
     }
     this.selectedHouse = house;
-    this.bookingData = { startDate: '', endDate: '' };
+    this.resetSelection();
+    
+    // Charger les réservations approuvées pour bloquer les dates
+    this.firebaseService.getApprovedBookingsForHouse(house.id).subscribe(bookings => {
+      this.blockedDates.clear();
+      bookings.forEach(b => {
+        let current = new Date(b.startDate);
+        const end = new Date(b.endDate);
+        while (current <= end) {
+          this.blockedDates.add(this.formatDate(current));
+          current.setDate(current.getDate() + 1);
+        }
+      });
+      this.generateCalendar();
+    });
   }
 
   closeModal() {
     this.selectedHouse = null;
   }
 
-  getDays() {
-    if(!this.bookingData.startDate || !this.bookingData.endDate) return 0;
-    const start = new Date(this.bookingData.startDate);
-    const end = new Date(this.bookingData.endDate);
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+  // 2. Logique Calendrier
+  changeMonth(delta: number) {
+    this.currentMonth += delta;
+    if (this.currentMonth > 11) { this.currentMonth = 0; this.currentYear++; }
+    else if (this.currentMonth < 0) { this.currentMonth = 11; this.currentYear--; }
+    this.generateCalendar();
+  }
+
+  generateCalendar() {
+    this.calendarDays = [];
+    this.emptyDays = [];
+    
+    const firstDayOfMonth = new Date(this.currentYear, this.currentMonth, 1);
+    const lastDayOfMonth = new Date(this.currentYear, this.currentMonth + 1, 0);
+    const daysInMonth = lastDayOfMonth.getDate();
+    
+    // Remplissage des jours vides avant le 1er (Dimanche = 0)
+    for (let i = 0; i < firstDayOfMonth.getDay(); i++) {
+      this.emptyDays.push({});
+    }
+
+    const today = new Date();
+    today.setHours(0,0,0,0);
+
+    for (let i = 1; i <= daysInMonth; i++) {
+      const date = new Date(this.currentYear, this.currentMonth, i);
+      const formatted = this.formatDate(date);
+      
+      this.calendarDays.push({
+        date: date,
+        dayNumber: i,
+        isBooked: this.blockedDates.has(formatted),
+        isPast: date < today
+      });
+    }
+  }
+
+  // 3. Logique Sélection
+  selectDate(day: any) {
+    if (day.isBooked || day.isPast) return;
+    this.errorMessage = '';
+
+    if (!this.startDate || (this.startDate && this.endDate)) {
+      // Nouvelle sélection (Clic 1)
+      this.startDate = day.date;
+      this.endDate = null;
+    } else if (this.startDate && !this.endDate) {
+      // Fin de période (Clic 2)
+      if (day.date < this.startDate) {
+        this.startDate = day.date; // Corriger si clic avant
+      } else {
+        // Vérifier conflit au milieu
+        if (this.checkOverlap(this.startDate, day.date)) {
+          this.errorMessage = "La période sélectionnée contient des dates déjà réservées.";
+          return;
+        }
+        this.endDate = day.date;
+      }
+    }
+  }
+
+  isSelected(date: Date): boolean {
+    return (!!this.startDate && date.getTime() === this.startDate.getTime()) || 
+           (!!this.endDate && date.getTime() === this.endDate.getTime());
+  }
+
+  isInRange(date: Date): boolean {
+    if (!this.startDate || !this.endDate) return false;
+    return date > this.startDate && date < this.endDate;
+  }
+
+  // Utilitaires
+  formatDate(d: Date): string {
+    const year = d.getFullYear();
+    const month = ('0' + (d.getMonth() + 1)).slice(-2);
+    const day = ('0' + d.getDate()).slice(-2);
+    // CORRECTION ICI : Pas de backslashes inutiles car heredoc entre quotes
+    return `${year}-${month}-${day}`;
+  }
+
+  checkOverlap(start: Date, end: Date): boolean {
+    let current = new Date(start);
+    while (current <= end) {
+      if (this.blockedDates.has(this.formatDate(current))) return true;
+      current.setDate(current.getDate() + 1);
+    }
+    return false;
+  }
+
+  getDaysCount() {
+    if(!this.startDate || !this.endDate) return 0;
+    const diff = Math.abs(this.endDate.getTime() - this.startDate.getTime());
+    return Math.ceil(diff / (1000 * 60 * 60 * 24));
   }
 
   calculateTotal() {
-    const days = this.getDays();
-    return days > 0 ? days * this.selectedHouse.price : 0;
+    return this.getDaysCount() * this.selectedHouse.price;
   }
 
   isValidDates() {
-    return this.getDays() > 0;
+    return this.startDate && this.endDate && !this.errorMessage;
+  }
+
+  resetSelection() {
+    this.startDate = null;
+    this.endDate = null;
+    this.errorMessage = '';
+    this.currentDate = new Date();
+    this.currentMonth = this.currentDate.getMonth();
+    this.currentYear = this.currentDate.getFullYear();
   }
 
   async confirmBooking() {
-    if(!this.selectedHouse || !this.userSignal()) return;
+    if(!this.isValidDates() || !this.userSignal()) return;
     
+    this.isSubmitting = true;
     try {
       await this.firebaseService.addBooking({
         houseId: this.selectedHouse.id,
         houseTitle: this.selectedHouse.title,
         userId: this.userSignal()!.uid,
         userEmail: this.userSignal()!.email || 'Anonyme',
-        startDate: this.bookingData.startDate,
-        endDate: this.bookingData.endDate,
+        startDate: this.formatDate(this.startDate!),
+        endDate: this.formatDate(this.endDate!),
         totalPrice: this.calculateTotal(),
         status: 'pending'
       });
-      alert('Votre demande de réservation a été envoyée !');
+      alert('Demande de réservation envoyée avec succès !');
       this.closeModal();
       this.router.navigate(['/my-bookings']);
     } catch (e) {
       console.error(e);
       alert('Erreur lors de la réservation.');
+    } finally {
+      this.isSubmitting = false;
     }
   }
 }
 EOF
 
-# 4. ROUTES
-echo "🛣️ Configuration des routes (Dashboard Admin)..."
-cat > src/app/app.routes.ts <<'EOF'
-import { Routes } from '@angular/router';
-import { HomeComponent } from './home/home.component';
-import { AddHouseComponent } from './add-house/add-house.component';
-import { LoginComponent } from './login/login.component';
-import { MyBookingsComponent } from './my-bookings/my-bookings.component';
-import { AdminDashboardComponent } from './admin-dashboard/admin-dashboard.component';
-
-export const routes: Routes = [
-  { path: '', component: HomeComponent },
-  { path: 'add', component: AddHouseComponent },
-  { path: 'login', component: LoginComponent },
-  { path: 'my-bookings', component: MyBookingsComponent },
-  { path: 'admin-dashboard', component: AdminDashboardComponent },
-  { path: '**', redirectTo: '' }
-];
-EOF
-
-echo "✅ Dashboard Admin créé avec succès !"
-echo "👉 Connectez-vous avec 'elyes@gmail.com' pour y accéder."
+echo "✅ Calendrier visuel installé ! Les jours réservés (Approuvés) sont maintenant bloqués."

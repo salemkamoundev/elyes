@@ -22,11 +22,14 @@ import {
   where,
   orderBy,
   doc,
-  updateDoc
+  updateDoc,
+  setDoc,
+  getDoc
 } from 'firebase/firestore';
 import { Observable } from 'rxjs';
 import { environment } from '../../environments/environment';
 
+// Interfaces
 export interface Booking {
   id?: string;
   houseId: string;
@@ -38,6 +41,15 @@ export interface Booking {
   totalPrice: number;
   status: 'pending' | 'approved' | 'rejected';
   createdAt: any;
+}
+
+export interface FooterConfig {
+  phone: string;
+  email: string;
+  address: string;
+  copyright: string;
+  facebookUrl?: string;
+  instagramUrl?: string;
 }
 
 @Injectable({
@@ -91,11 +103,7 @@ export class FirebaseService {
   // --- BOOKINGS ---
   async addBooking(booking: Partial<Booking>) {
     const colRef = collection(this.db, 'bookings');
-    return await addDoc(colRef, {
-      ...booking,
-      status: 'pending',
-      createdAt: serverTimestamp()
-    });
+    return await addDoc(colRef, { ...booking, status: 'pending', createdAt: serverTimestamp() });
   }
 
   getUserBookings(userId: string): Observable<Booking[]> {
@@ -122,9 +130,50 @@ export class FirebaseService {
     });
   }
 
-  // Action Admin : Valider ou Refuser
+  // NOUVEAU : Récupérer les réservations approuvées pour une maison spécifique (pour le calendrier)
+  getApprovedBookingsForHouse(houseId: string): Observable<Booking[]> {
+    return new Observable((observer) => {
+      const colRef = collection(this.db, 'bookings');
+      // On récupère tout pour cette maison, on filtrera 'approved'
+      const q = query(colRef, where('houseId', '==', houseId));
+      
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const bookings = snapshot.docs
+          .map(doc => ({ id: doc.id, ...doc.data() } as Booking))
+          .filter(b => b.status === 'approved'); // Seulement les validées bloquent le calendrier
+        observer.next(bookings);
+      });
+      return () => unsubscribe();
+    });
+  }
+
   async updateBookingStatus(bookingId: string, status: 'approved' | 'rejected') {
     const docRef = doc(this.db, 'bookings', bookingId);
     return await updateDoc(docRef, { status });
+  }
+
+  // --- FOOTER CONFIG ---
+  getFooterConfig(): Observable<FooterConfig> {
+    return new Observable((observer) => {
+      const docRef = doc(this.db, 'settings', 'footer');
+      const unsubscribe = onSnapshot(docRef, (docSnap) => {
+        if (docSnap.exists()) {
+          observer.next(docSnap.data() as FooterConfig);
+        } else {
+          observer.next({
+            phone: '+216 215 415 425',
+            email: 'elyes@gmail.com',
+            address: 'Tunis, Tunisie',
+            copyright: '2025 ElyesImmo'
+          });
+        }
+      });
+      return () => unsubscribe();
+    });
+  }
+
+  async updateFooterConfig(config: FooterConfig) {
+    const docRef = doc(this.db, 'settings', 'footer');
+    return await setDoc(docRef, config, { merge: true });
   }
 }
